@@ -67,18 +67,64 @@ public class LocadoraDAO {
     }
 
     public void deletarCliente(int idCliente) {
-        String sql = "DELETE FROM Clientes WHERE idClientes = ?";
-        try (Connection conn = ConexaoMySQL.getConexao();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            pstmt.setInt(1, idCliente);
-            int rows = pstmt.executeUpdate();
-            if (rows > 0) System.out.println("Cliente deletado com sucesso!");
-            else System.out.println("Cliente com ID " + idCliente + " não encontrado.");
+        String checkActiveLocacoesSql = "SELECT COUNT(*) FROM Locações WHERE Clientes_idClientes = ? AND data_devolução_real IS NULL";
+        String deleteLocacoesSql = "DELETE FROM Locações WHERE Clientes_idClientes = ?";
+        String deleteClienteSql = "DELETE FROM Clientes WHERE idClientes = ?";
+
+        Connection conn = null;
+        try {
+            conn = ConexaoMySQL.getConexao();
+            conn.setAutoCommit(false); // Inicia a transação
+
+            // 1. Verifica se há locações ativas
+            try (PreparedStatement checkStmt = conn.prepareStatement(checkActiveLocacoesSql)) {
+                checkStmt.setInt(1, idCliente);
+                try (ResultSet rs = checkStmt.executeQuery()) {
+                    if (rs.next() && rs.getInt(1) > 0) {
+                        System.err.println("Erro: Cliente não pode ser deletado pois possui locações ativas.");
+                        conn.rollback(); // Desfaz a transação antes de sair
+                        return;
+                    }
+                }
+            }
+
+            // 2. Deleta o histórico de locações do cliente
+            try (PreparedStatement deleteLocacoesStmt = conn.prepareStatement(deleteLocacoesSql)) {
+                deleteLocacoesStmt.setInt(1, idCliente);
+                deleteLocacoesStmt.executeUpdate();
+            }
+
+            // 3. Deleta o cliente
+            try (PreparedStatement deleteClienteStmt = conn.prepareStatement(deleteClienteSql)) {
+                deleteClienteStmt.setInt(1, idCliente);
+                int rows = deleteClienteStmt.executeUpdate();
+                if (rows > 0) {
+                    System.out.println("Cliente e seu histórico de locações foram deletados com sucesso!");
+                } else {
+                    System.out.println("Cliente com ID " + idCliente + " não encontrado.");
+                }
+            }
+
+            conn.commit(); // Efetiva a transação
+
         } catch (SQLException e) {
-            if (e.getErrorCode() == 1451) {
-                System.err.println("Erro: Cliente não pode ser deletado pois possui locações ativas.");
-            } else {
-                System.err.println("Erro ao deletar cliente: " + e.getMessage());
+            System.err.println("Erro ao deletar cliente e seu histórico: " + e.getMessage());
+            if (conn != null) {
+                try {
+                    conn.rollback(); // Desfaz a transação em caso de erro
+                    System.err.println("Transação revertida.");
+                } catch (SQLException ex) {
+                    System.err.println("Erro ao tentar reverter a transação: " + ex.getMessage());
+                }
+            }
+        } finally {
+            if (conn != null) {
+                try {
+                    conn.setAutoCommit(true); // Retorna ao modo padrão
+                    conn.close();
+                } catch (SQLException e) {
+                    e.printStackTrace();
+                }
             }
         }
     }
